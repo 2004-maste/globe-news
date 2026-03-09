@@ -1,41 +1,115 @@
 <div class="article-card">
-    {% if article.category %}
-    <span class="article-category {{ article.category|lower }}">{{ article.category }}</span>
-    {% endif %}
-    
-    {% if article.image_url %}
-    <div class="article-image">
-        <img src="{{ article.image_url }}" alt="{{ article.title }}" 
-             onerror="this.src='https://via.placeholder.com/400x200?text=News+Image'">
+    <!-- Top Row: Category & Badges -->
+    <div class="card-top-row">
+        {% if article.category %}
+        <span class="category-badge" style="background-color: {{ article.category|category_color }}">
+            {{ article.category }}
+        </span>
+        {% endif %}
+        
+        <div class="card-badges">
+            {% if article.has_full_content %}
+            <span class="badge full-content" title="Full article available">
+                <i class="fas fa-file-alt"></i>
+            </span>
+            {% endif %}
+            
+            {% if article.human_summary %}
+            <span class="badge human-summary" title="Editor's summary">
+                <i class="fas fa-pen-fancy"></i>
+            </span>
+            {% elif article.preview_content %}
+            <span class="badge smart-preview" title="Smart preview available">
+                <i class="fas fa-chart-line"></i>
+            </span>
+            {% endif %}
+            
+            {% if article.is_breaking %}
+            <span class="badge breaking">BREAKING</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Image Section -->
+    {% if article.url_to_image or article.image_url %}
+    <div class="card-image">
+        <img src="{{ article.url_to_image or article.image_url }}" 
+             alt="{{ article.title }}"
+             loading="lazy"
+             onerror="this.src='https://images.unsplash.com/photo-1588681664899-f142ff2dc9b1?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&h=200&q=80'">
+        
+        <!-- Language Indicator (if not English) -->
+        {% if article.language and article.language != 'en' %}
+        <span class="language-indicator" title="Kinyarwanda article">
+            🇷🇼
+        </span>
+        {% endif %}
     </div>
     {% endif %}
-    
-    <div class="article-content">
+
+    <!-- Content Section -->
+    <div class="card-content">
+        <!-- Title -->
         <h3 class="article-title">
-            <a href="{{ url_for('article_detail', article_id=article.id|category_color }}">
+            <a href="{{ url_for('article_detail', article_id=article.id) }}">
                 {{ article.title }}
             </a>
         </h3>
         
+        <!-- Description / Preview -->
         <p class="article-description">
-            {{ article.description or article.content[:150] if article.content else 'No description available' }}
+            {% if article.human_summary %}
+                {{ article.human_summary|truncate(120) }}
+            {% elif article.preview_content %}
+                {{ article.preview_content|striptags|truncate(120) }}
+            {% elif article.description %}
+                {{ article.description|truncate(120) }}
+            {% elif article.content %}
+                {{ article.content|striptags|truncate(120) }}
+            {% else %}
+                Click to read the full article...
+            {% endif %}
         </p>
         
+        <!-- Meta Information -->
         <div class="article-meta">
-            <span class="source">{{ article.source or 'Unknown Source' }}</span>
-            <span class="time">
-                <i class="far fa-clock"></i>
-                {% if article.published_at %}
-                    {{ article.published_at[:10] }}
-                {% else %}
-                    Recent
+            <div class="meta-left">
+                <span class="source">
+                    <i class="fas fa-building"></i>
+                    {{ article.source or 'Globe News' }}
+                </span>
+                {% if article.author and article.author != 'Unknown' %}
+                <span class="author">
+                    <i class="fas fa-user"></i>
+                    {{ article.author|truncate(15) }}
+                </span>
                 {% endif %}
-            </span>
+            </div>
+            
+            <div class="meta-right">
+                <span class="time">
+                    <i class="far fa-clock"></i>
+                    {% if article.published_at %}
+                        {{ article.published_at|time_ago }}
+                    {% else %}
+                        Recent
+                    {% endif %}
+                </span>
+            </div>
         </div>
         
-        <a href="{{ url_for('article_detail', article_id=article.id|category_color }}" class="read-more">
-            Read 
-            Summary <i class="fas fa-arrow-right"></i>
-        </a>
+        <!-- Footer with Read More -->
+        <div class="card-footer">
+            <a href="{{ url_for('article_detail', article_id=article.id) }}" class="read-more-btn">
+                <span>Read Full Article</span>
+                <i class="fas fa-arrow-right"></i>
+            </a>
+            
+            {% if article.read_time %}
+            <span class="read-time">
+                <i class="far fa-clock"></i> {{ article.read_time }} min read
+            </span>
+            {% endif %}
+        </div>
     </div>
 </div>
