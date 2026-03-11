@@ -1,28 +1,4 @@
 <div class="article-card">
-
-    <style>
-        body {
-               background-image: url('/static/images/bk.jpg');
-               background-size: cover;
-               background-position: center;
-               background-attachment: fixed; /* This makes it stay fixed when scrolling */
-               background-repeat: no-repeat;
-
-               position: relative;
-             }
-
-/* Add a dark overlay to ensure text remains readable */
-        body::before {
-              content: '';
-              position: fixed;
-              top: 0;
-              left: 0;
-              width: 100%;
-              height: 100%;
-              background-color: rgba(0, 0, 0, 0.7); /* Adjust opacity as needed */
-              z-index: -1;
-                       }
-    </style>
     <!-- Top Row: Category & Badges -->
     <div class="card-top-row">
         {% if article.category %}
