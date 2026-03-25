@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Backend API configuration
-BACKEND_URL = os.environ.get('BACKEND_URL', 'https://globenew--backend-api--5pt6gkpwq49b.code.run/')
+BACKEND_URL = 'BACKEND_URL', 'https://globenew--backend-api--5pt6gkpwq49b.code.run/'
 API_VERSION = "v1"
 
 # ==================== TEMPLATE FILTERS ====================
