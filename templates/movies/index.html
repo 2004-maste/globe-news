@@ -1,0 +1,454 @@
+{% extends "base.html" %}
+
+{% block title %}Movies & TV Shows - Trending Entertainment{% endblock %}
+
+{% block meta_description %}Discover trending movies and TV shows. Find where to watch, ratings, and streaming information for the latest entertainment.{% endblock %}
+
+{% block content %}
+<div class="movies-page">
+    <div class="container">
+        <!-- Hero Section -->
+        <div class="movies-hero">
+            <h1 class="movies-title">
+                <i class="fas fa-film"></i> Movies & TV Shows
+            </h1>
+            <p class="movies-subtitle">
+                Discover trending movies, TV shows, and where to watch them
+            </p>
+        </div>
+
+        <!-- Media Type Filter -->
+        <div class="media-filter">
+            <a href="{{ url_for('movies_home', type='all') }}" 
+               class="filter-btn {{ 'active' if media_type == 'all' }}">
+                <i class="fas fa-globe"></i> All
+            </a>
+            <a href="{{ url_for('movies_home', type='movie') }}" 
+               class="filter-btn {{ 'active' if media_type == 'movie' }}">
+                <i class="fas fa-film"></i> Movies
+            </a>
+            <a href="{{ url_for('movies_home', type='tv') }}" 
+               class="filter-btn {{ 'active' if media_type == 'tv' }}">
+                <i class="fas fa-tv"></i> TV Shows
+            </a>
+        </div>
+
+        <!-- Movies Grid -->
+        {% if movies %}
+        <div class="movies-grid-large">
+            {% for movie in movies %}
+            <a href="{{ url_for('movie_detail', movie_id=movie.tmdb_id) }}" class="movie-card-large">
+                <div class="movie-poster-large">
+                    {% if movie.poster_url %}
+                    <img src="{{ movie.poster_url }}" alt="{{ movie.title }}">
+                    {% else %}
+                    <div class="movie-placeholder-large">
+                        <i class="fas fa-film"></i>
+                    </div>
+                    {% endif %}
+                    <div class="movie-rating-large">
+                        <i class="fas fa-star"></i> 
+                        {% if movie.rating %}{{ "%.1f"|format(movie.rating) }}{% else %}N/A{% endif %}/10
+                    </div>
+                    {% if movie.type == 'tv' %}
+                    <div class="movie-type-badge-large tv">TV Series</div>
+                    {% else %}
+                    <div class="movie-type-badge-large movie">Movie</div>
+                    {% endif %}
+                </div>
+                <div class="movie-info-large">
+                    <h3 class="movie-title-large">{{ movie.title }}</h3>
+                    <div class="movie-meta-large">
+                        <span class="movie-year">
+                            <i class="far fa-calendar-alt"></i> 
+                            {{ movie.release_date[:4] if movie.release_date else 'N/A' }}
+                        </span>
+                        <span class="movie-popularity">
+                            <i class="fas fa-fire"></i> 
+                            {{ "%.0f"|format(movie.popularity) }}
+                        </span>
+                    </div>
+                    <p class="movie-overview">
+                        {{ movie.overview|truncate(120) if movie.overview else 'No overview available.' }}
+                    </p>
+                    {% if movie.streaming_info and movie.streaming_info.flatrate %}
+                    <div class="streaming-badges">
+                        {% for provider in movie.streaming_info.flatrate[:3] %}
+                        <span class="streaming-badge">{{ provider }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+        
+        <div class="movies-stats">
+            Showing {{ movies|length }} {{ media_type if media_type != 'all' else 'movies & TV shows' }}
+        </div>
+        {% else %}
+        <div class="empty-movies-state">
+            <div class="empty-icon">🎬</div>
+            <h3>No movies found</h3>
+            <p>Check back later for trending movies and TV shows.</p>
+            <a href="{{ url_for('movies_home', type='all') }}" class="btn-primary">
+                <i class="fas fa-refresh"></i> Refresh
+            </a>
+        </div>
+        {% endif %}
+
+        <!-- Search Section -->
+        <div class="movies-search-section">
+            <h2 class="search-title">Search Movies & TV Shows</h2>
+            <form action="{{ url_for('movies_search') }}" method="get" class="movies-search-form">
+                <div class="search-wrapper">
+                    <i class="fas fa-search search-icon"></i>
+                    <input type="text" 
+                           name="q" 
+                           placeholder="Search by title... (e.g., Inception, Breaking Bad)"
+                           class="movies-search-input">
+                    <button type="submit" class="search-submit">Search</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<style>
+.movies-page {
+    padding: 40px 0;
+}
+
+.movies-hero {
+    text-align: center;
+    margin-bottom: 50px;
+}
+
+.movies-title {
+    font-size: 3rem;
+    background: linear-gradient(135deg, #f8fafc, #8b5cf6, #ec4899);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 15px;
+}
+
+.movies-subtitle {
+    font-size: 1.2rem;
+    color: var(--text-secondary);
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.media-filter {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin-bottom: 40px;
+    flex-wrap: wrap;
+}
+
+.filter-btn {
+    padding: 12px 30px;
+    border-radius: 30px;
+    text-decoration: none;
+    font-weight: 600;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary);
+    transition: all 0.3s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.filter-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    transform: translateY(-2px);
+}
+
+.filter-btn.active {
+    background: linear-gradient(135deg, #8b5cf6, #ec4899);
+    color: white;
+    box-shadow: 0 5px 15px rgba(139, 92, 246, 0.3);
+}
+
+.movies-grid-large {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 30px;
+    margin: 40px 0;
+}
+
+.movie-card-large {
+    background: var(--card-dark);
+    border-radius: 20px;
+    overflow: hidden;
+    text-decoration: none;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    flex-direction: column;
+}
+
+.movie-card-large:hover {
+    transform: translateY(-10px);
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4);
+    border-color: rgba(139, 92, 246, 0.3);
+}
+
+.movie-poster-large {
+    position: relative;
+    aspect-ratio: 2/3;
+    overflow: hidden;
+    background: linear-gradient(135deg, #1e293b, #0f172a);
+}
+
+.movie-poster-large img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.6s ease;
+}
+
+.movie-card-large:hover .movie-poster-large img {
+    transform: scale(1.05);
+}
+
+.movie-placeholder-large {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 4rem;
+    color: #8b5cf6;
+}
+
+.movie-rating-large {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    background: rgba(0, 0, 0, 0.8);
+    padding: 5px 10px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #fbbf24;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    backdrop-filter: blur(5px);
+}
+
+.movie-type-badge-large {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    backdrop-filter: blur(5px);
+}
+
+.movie-type-badge-large.movie {
+    background: rgba(59, 130, 246, 0.9);
+    color: white;
+}
+
+.movie-type-badge-large.tv {
+    background: rgba(139, 92, 246, 0.9);
+    color: white;
+}
+
+.movie-info-large {
+    padding: 20px;
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.movie-title-large {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.movie-meta-large {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.movie-year i, .movie-popularity i {
+    margin-right: 5px;
+}
+
+.movie-overview {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin-bottom: 15px;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.streaming-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: auto;
+}
+
+.streaming-badge {
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+    padding: 4px 10px;
+    border-radius: 15px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.movies-stats {
+    text-align: center;
+    padding: 20px;
+    color: var(--text-secondary);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    margin-top: 20px;
+}
+
+.movies-search-section {
+    margin-top: 60px;
+    padding: 40px;
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(236, 72, 153, 0.1));
+    border-radius: 30px;
+    text-align: center;
+}
+
+.search-title {
+    font-size: 1.8rem;
+    color: var(--text-primary);
+    margin-bottom: 25px;
+}
+
+.movies-search-form {
+    max-width: 500px;
+    margin: 0 auto;
+}
+
+.search-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.search-icon {
+    position: absolute;
+    left: 15px;
+    color: var(--text-secondary);
+}
+
+.movies-search-input {
+    flex: 1;
+    padding: 15px 20px 15px 45px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-radius: 25px;
+    color: var(--text-primary);
+    font-size: 1rem;
+    transition: all 0.3s ease;
+}
+
+.movies-search-input:focus {
+    outline: none;
+    border-color: #8b5cf6;
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.search-submit {
+    margin-left: 10px;
+    padding: 15px 30px;
+    background: linear-gradient(135deg, #8b5cf6, #ec4899);
+    color: white;
+    border: none;
+    border-radius: 25px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.search-submit:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(139, 92, 246, 0.4);
+}
+
+.empty-movies-state {
+    text-align: center;
+    padding: 80px 20px;
+}
+
+.empty-icon {
+    font-size: 4rem;
+    margin-bottom: 20px;
+}
+
+.empty-movies-state h3 {
+    font-size: 1.8rem;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+}
+
+.empty-movies-state p {
+    color: var(--text-secondary);
+    margin-bottom: 30px;
+}
+
+@media (max-width: 768px) {
+    .movies-title {
+        font-size: 2rem;
+    }
+    
+    .movies-grid-large {
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 20px;
+    }
+    
+    .filter-btn {
+        padding: 8px 20px;
+        font-size: 0.9rem;
+    }
+    
+    .movies-search-section {
+        padding: 30px 20px;
+    }
+    
+    .search-wrapper {
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    .movies-search-input {
+        width: 100%;
+        padding: 12px 20px 12px 45px;
+    }
+    
+    .search-submit {
+        width: 100%;
+        margin-left: 0;
+    }
+}
+</style>
+{% endblock %}
