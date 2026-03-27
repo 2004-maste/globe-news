@@ -225,11 +225,48 @@ def trigger_fetch():
         logger.error(f"Error triggering fetch: {e}")
         return {"message": "Error triggering fetch"}
 
+# ==================== MOVIE API HELPER FUNCTIONS ====================
+
+def fetch_trending_movies(media_type='all', limit=20):
+    """Fetch trending movies and TV shows from backend."""
+    try:
+        url = f"{BACKEND_URL}/api/{API_VERSION}/movies/trending"
+        params = {'media_type': media_type, 'limit': limit}
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching trending movies: {e}")
+        return {"movies": [], "count": 0}
+
+def fetch_movie_details(movie_id):
+    """Fetch single movie details by TMDB ID."""
+    try:
+        url = f"{BACKEND_URL}/api/{API_VERSION}/movies/{movie_id}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching movie {movie_id}: {e}")
+        return None
+
+def search_movies(query):
+    """Search for movies by title."""
+    try:
+        url = f"{BACKEND_URL}/api/{API_VERSION}/movies/search"
+        params = {'query': query}
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error searching movies: {e}")
+        return {"results": [], "count": 0}
+
 # ==================== ROUTES ====================
 
 @app.route('/')
 def index():
-    """Homepage - Latest news with 60 articles"""
+    """Homepage - Latest news with 60 articles and trending movies"""
     language = request.args.get('language', 'all')
     page = request.args.get('page', 1, type=int)
     limit = 60
@@ -252,11 +289,16 @@ def index():
         cat_data = fetch_articles({'category': category['name'], 'limit': 1})
         category['article_count'] = cat_data.get('total', 0)
     
+    # Fetch trending movies for homepage
+    trending_movies_data = fetch_trending_movies('all', 6)
+    trending_movies = trending_movies_data.get('movies', [])
+    
     return render_template(
         'index.html',
         articles=articles,
         breaking_articles=breaking_articles,
         categories=categories,
+        trending_movies=trending_movies,
         language=language,
         page=page,
         total_pages=total_pages,
@@ -294,21 +336,21 @@ def article_detail(article_id):
             preview_type = 'human'
             logger.info(f"Article {article_id}: Using human summary")
         
-        # PRIORITY 2: AI preview from database
+        # PRIORITY 2: Smart preview from database
         elif article.get('preview_content'):
             preview_html = article['preview_content']
-            preview_type = 'ai'
-            logger.info(f"Article {article_id}: Using AI preview")
+            preview_type = 'smart'
+            logger.info(f"Article {article_id}: Using smart preview")
         
         # PRIORITY 3: Preview from API
         elif preview_data and preview_data.get('has_preview'):
             preview_html = preview_data.get('preview')
-            preview_type = 'ai'
+            preview_type = 'smart'
             logger.info(f"Article {article_id}: Using API preview")
         
-        # Check if preview needs regeneration (only for AI previews, not human)
+        # Check if preview needs regeneration (only for smart previews, not human)
         needs_regeneration = False
-        if preview_type == 'ai' and not preview_html:
+        if preview_type == 'smart' and not preview_html:
             needs_regeneration = True
         elif not preview_html and not article.get('human_summary'):
             needs_regeneration = True
@@ -464,6 +506,64 @@ def search():
         total_results=total
     )
 
+# ==================== MOVIE ROUTES ====================
+
+@app.route('/movies')
+def movies_home():
+    """Movies and TV Shows homepage."""
+    media_type = request.args.get('type', 'all')
+    limit = 40
+    
+    # Fetch trending movies
+    movies_data = fetch_trending_movies(media_type, limit)
+    movies = movies_data.get('movies', [])
+    
+    # Get categories for sidebar
+    categories = fetch_categories()
+    
+    return render_template(
+        'movies/index.html',
+        movies=movies,
+        media_type=media_type,
+        categories=categories,
+        total_movies=movies_data.get('count', 0)
+    )
+
+@app.route('/movie/<int:movie_id>')
+def movie_detail(movie_id):
+    """Movie detail page."""
+    movie = fetch_movie_details(movie_id)
+    
+    if not movie:
+        return render_template('error.html', 
+                             message="Movie not found",
+                             error_code=404), 404
+    
+    return render_template(
+        'movies/detail.html',
+        movie=movie
+    )
+
+@app.route('/movies/search')
+def movies_search():
+    """Search movies page."""
+    query = request.args.get('q', '')
+    
+    if not query:
+        return redirect(url_for('movies_home'))
+    
+    results = search_movies(query)
+    movies = results.get('results', [])
+    
+    return render_template(
+        'movies/search.html',
+        query=query,
+        movies=movies,
+        total_results=len(movies)
+    )
+
+# ==================== STATIC ROUTES ====================
+
 @app.route('/fetch-now', methods=['POST'])
 def fetch_now():
     """Trigger manual news fetch."""
@@ -563,6 +663,11 @@ def sitemap():
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>https://globe-news-jade.vercel.app/movies</loc>
+    <changefreq>daily</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>https://globe-news-jade.vercel.app/search</loc>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
@@ -656,8 +761,8 @@ if __name__ == '__main__':
     print("="*60)
     print(f"📱 Frontend: http://localhost:5000")
     print(f"🔗 Backend: {BACKEND_URL}")
-    print(f"📊 Version: 2.1.0 (with Human Summary Support)")
-    print(f"📝 Features: Human summaries, AI previews, Full content extraction")
+    print(f"📊 Version: 3.0.0 (with Movies & TV Shows)")
+    print(f"📝 Features: Human summaries, Smart previews, Movies/TV shows")
     print(f"🗺️  Sitemap: https://globe-news-jade.vercel.app/sitemap.xml")
     print(f"🤖 Robots:  https://globe-news-jade.vercel.app/robots.txt")
     print("="*60)
