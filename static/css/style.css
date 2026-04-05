@@ -3389,3 +3389,47 @@ body::before {
     background-color: rgba(0, 0, 0, 0.7); /* Adjust opacity as needed */
     z-index: -1;
 }
+
+/* Breaking News Ticker Effect */
+.breaking-news-section .section-header {
+    position: relative;
+}
+
+.breaking-news-section .view-all-link {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
+.breaking-news-section .view-all-link:hover {
+    background: rgba(239, 68, 68, 0.25);
+}
+
+/* Add a red dot animation next to Breaking News title */
+.section-title .breaking-icon {
+    position: relative;
+    padding-left: 5px;
+}
+
+.section-title .breaking-icon::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 8px;
+    height: 8px;
+    background: #ef4444;
+    border-radius: 50%;
+    animation: pulse-dot 1.5s infinite;
+}
+
+@keyframes pulse-dot {
+    0%, 100% {
+        opacity: 1;
+        transform: translateY(-50%) scale(1);
+    }
+    50% {
+        opacity: 0.5;
+        transform: translateY(-50%) scale(1.3);
+    }
+}
