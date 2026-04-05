@@ -461,6 +461,201 @@
     transform: translateY(-5px);
 }
 
+/* Breaking News Section - Enhanced */
+.breaking-news-section {
+    margin: 40px 0 60px;
+    position: relative;
+}
+
+.breaking-news-section .section-header {
+    margin-bottom: 25px;
+}
+
+.breaking-news-section .section-title {
+    font-size: 1.8rem;
+}
+
+.breaking-icon {
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+    padding: 8px 15px;
+    border-radius: 30px;
+    font-size: 1rem;
+    color: white;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 2px 10px rgba(239, 68, 68, 0.4);
+}
+
+.breaking-news-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 25px;
+    margin-top: 20px;
+}
+
+.breaking-news-card {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.08), rgba(0, 0, 0, 0.3));
+    backdrop-filter: blur(10px);
+    border-radius: 20px;
+    overflow: hidden;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+}
+
+.breaking-news-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, #ef4444, #f97316, #ef4444);
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}
+
+.breaking-news-card:hover {
+    transform: translateY(-8px);
+    box-shadow: 0 20px 40px rgba(239, 68, 68, 0.2);
+    border-color: rgba(239, 68, 68, 0.5);
+}
+
+.breaking-image {
+    position: relative;
+    height: 200px;
+    overflow: hidden;
+}
+
+.breaking-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.5s ease;
+}
+
+.breaking-news-card:hover .breaking-image img {
+    transform: scale(1.08);
+}
+
+.breaking-badge {
+    position: absolute;
+    top: 15px;
+    left: 15px;
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+    color: white;
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    animation: blink 1.5s infinite;
+    z-index: 2;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+.breaking-content {
+    padding: 20px;
+}
+
+.breaking-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    font-size: 0.75rem;
+}
+
+.breaking-source {
+    color: #f97316;
+    font-weight: 600;
+    background: rgba(249, 115, 22, 0.15);
+    padding: 3px 10px;
+    border-radius: 15px;
+}
+
+.breaking-date {
+    color: var(--text-secondary);
+}
+
+.breaking-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 12px;
+    line-height: 1.4;
+}
+
+.breaking-title a {
+    color: var(--text-primary);
+    text-decoration: none;
+    transition: color 0.3s ease;
+}
+
+.breaking-title a:hover {
+    color: #f97316;
+}
+
+.breaking-description {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    margin-bottom: 15px;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.breaking-read-more {
+    color: #f97316;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 0.85rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: gap 0.3s ease;
+}
+
+.breaking-read-more:hover {
+    gap: 10px;
+    color: #ef4444;
+}
+
+/* Responsive Breaking News */
+@media (max-width: 1024px) {
+    .breaking-news-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .breaking-news-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .breaking-image {
+        height: 180px;
+    }
+    
+    .breaking-title {
+        font-size: 1rem;
+    }
+}
+
+    
 /* Movies Section */
 .trending-movies-section {
     margin: 60px 0;
