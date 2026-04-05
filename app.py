@@ -91,15 +91,8 @@ def safe_html(text):
     """Safely render HTML content."""
     if not text:
         return ""
-    # Allow safe HTML tags for previews
-    allowed_tags = ['div', 'span', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 
-                   'ul', 'ol', 'li', 'strong', 'em', 'b', 'i', 'u', 'a', 
-                   'img', 'br', 'hr', 'table', 'tr', 'td', 'th', 'style']
-    
-    # Remove script tags and other dangerous elements
     text = re.sub(r'<script.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<style.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    
     return text
 
 @app.template_filter('category_color')
@@ -140,9 +133,29 @@ def fetch_articles(params=None):
     """Fetch articles from backend API."""
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/articles"
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        return response.json()
+        logger.info(f"Fetching articles from: {url}")
+        if params:
+            logger.info(f"With params: {params}")
+        
+        response = requests.get(url, params=params, timeout=30)
+        logger.info(f"Response status: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            articles = data.get('articles', [])
+            total = data.get('total', 0)
+            logger.info(f"Success: Got {len(articles)} articles, total={total}")
+            
+            # Log first article for debugging
+            if articles:
+                logger.info(f"First article title: {articles[0].get('title', 'N/A')}")
+                logger.info(f"First article has category_name: {articles[0].get('category_name', 'MISSING')}")
+            
+            return data
+        else:
+            logger.error(f"API returned status {response.status_code}")
+            return {"articles": [], "total": 0}
+            
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching articles: {e}")
         return {"articles": [], "total": 0}
@@ -155,7 +168,6 @@ def fetch_article(article_id):
         response.raise_for_status()
         data = response.json()
         
-        # Ensure all expected fields exist
         if 'human_summary' not in data:
             data['human_summary'] = None
         if 'preview_content' not in data:
@@ -272,6 +284,19 @@ def index():
     limit = 60
     skip = (page - 1) * limit
     
+    # Test direct API call first
+    test_url = f"{BACKEND_URL}/api/{API_VERSION}/articles?limit=5"
+    logger.info(f"TEST: Direct API call to {test_url}")
+    try:
+        test_response = requests.get(test_url, timeout=10)
+        logger.info(f"TEST: Response status = {test_response.status_code}")
+        if test_response.status_code == 200:
+            test_data = test_response.json()
+            logger.info(f"TEST: Got {len(test_data.get('articles', []))} articles, total={test_data.get('total', 0)}")
+    except Exception as e:
+        logger.error(f"TEST FAILED: {e}")
+    
+    # Fetch articles
     articles_data = fetch_articles({
         'limit': limit, 
         'skip': skip,
@@ -279,7 +304,7 @@ def index():
     })
     articles = articles_data.get('articles', [])
     total_articles = articles_data.get('total', 0)
-    total_pages = (total_articles + limit - 1) // limit
+    total_pages = (total_articles + limit - 1) // limit if total_articles > 0 else 1
     
     breaking_data = fetch_breaking_articles()
     breaking_articles = breaking_data.get('articles', [])[:5]
@@ -289,9 +314,10 @@ def index():
         cat_data = fetch_articles({'category': category['name'], 'limit': 1})
         category['article_count'] = cat_data.get('total', 0)
     
-    # Fetch trending movies for homepage
     trending_movies_data = fetch_trending_movies('all', 6)
     trending_movies = trending_movies_data.get('movies', [])
+    
+    logger.info(f"RENDER: {len(articles)} articles, {total_articles} total, {len(breaking_articles)} breaking, {len(trending_movies)} movies")
     
     return render_template(
         'index.html',
@@ -310,7 +336,6 @@ def index():
 def article_detail(article_id):
     """Article detail page with human summary support."""
     try:
-        # Fetch article
         article = fetch_article(article_id)
         
         if not article:
@@ -319,43 +344,30 @@ def article_detail(article_id):
                                  message="Article not found",
                                  error_code=404), 404
         
-        # Fetch preview
         preview_data = fetch_preview(article_id)
         
-        # Check if article has full content
         has_full_content = article.get('has_full_content', False)
         content_length = article.get('content_length', 0)
         
-        # Determine which preview to show (human summary takes priority)
         preview_html = None
         preview_type = None
         
-        # PRIORITY 1: Human summary (from admin)
         if article.get('human_summary'):
             preview_html = article['human_summary']
             preview_type = 'human'
-            logger.info(f"Article {article_id}: Using human summary")
-        
-        # PRIORITY 2: Smart preview from database
         elif article.get('preview_content'):
             preview_html = article['preview_content']
             preview_type = 'smart'
-            logger.info(f"Article {article_id}: Using smart preview")
-        
-        # PRIORITY 3: Preview from API
         elif preview_data and preview_data.get('has_preview'):
             preview_html = preview_data.get('preview')
             preview_type = 'smart'
-            logger.info(f"Article {article_id}: Using API preview")
         
-        # Check if preview needs regeneration (only for smart previews, not human)
         needs_regeneration = False
         if preview_type == 'smart' and not preview_html:
             needs_regeneration = True
         elif not preview_html and not article.get('human_summary'):
             needs_regeneration = True
         
-        # Show content warning if no full content
         content_warning = None
         if not has_full_content and content_length < 500:
             content_warning = "⚠️ Limited content available - only RSS summary was fetched"
@@ -399,7 +411,6 @@ def categories():
     """Categories listing page."""
     categories_list = fetch_categories()
     
-    # Get article count for each category
     for category in categories_list:
         params = {'category': category['name'], 'limit': 1}
         data = fetch_articles(params)
@@ -411,13 +422,11 @@ def categories():
 @app.route('/category/<category_name>')
 def category_detail(category_name):
     """Individual category page."""
-    # Get language preference
     language = request.args.get('language', 'all')
     page = request.args.get('page', 1, type=int)
     limit = 20
     skip = (page - 1) * limit
     
-    # Fetch articles for this category
     params = {
         'category': category_name,
         'language': language,
@@ -428,11 +437,8 @@ def category_detail(category_name):
     articles_data = fetch_articles(params)
     articles = articles_data.get('articles', [])
     total = articles_data.get('total', 0)
+    total_pages = (total + limit - 1) // limit if total > 0 else 1
     
-    # Calculate pagination
-    total_pages = (total + limit - 1) // limit
-    
-    # Get category info
     categories_list = fetch_categories()
     current_category = next((c for c in categories_list if c['name'].lower() == category_name.lower()), None)
     
@@ -454,11 +460,8 @@ def category_detail(category_name):
 @app.route('/breaking')
 def breaking_news():
     """Breaking news page."""
-    # Get breaking articles
     breaking_data = fetch_breaking_articles()
     articles = breaking_data.get('articles', [])
-    
-    # Extract unique sources from articles
     sources = list(set(article.get('source', 'Unknown') for article in articles))
     
     return render_template(
@@ -481,7 +484,6 @@ def search():
     if not query:
         return redirect(url_for('index'))
     
-    # Search articles
     params = {
         'search': query,
         'language': language,
@@ -492,9 +494,7 @@ def search():
     articles_data = fetch_articles(params)
     articles = articles_data.get('articles', [])
     total = articles_data.get('total', 0)
-    
-    # Calculate pagination
-    total_pages = (total + limit - 1) // limit
+    total_pages = (total + limit - 1) // limit if total > 0 else 1
     
     return render_template(
         'search.html',
@@ -514,11 +514,8 @@ def movies_home():
     media_type = request.args.get('type', 'all')
     limit = 40
     
-    # Fetch trending movies
     movies_data = fetch_trending_movies(media_type, limit)
     movies = movies_data.get('movies', [])
-    
-    # Get categories for sidebar
     categories = fetch_categories()
     
     return render_template(
@@ -589,50 +586,34 @@ def api_health():
             "timestamp": datetime.now().isoformat()
         }), 200
 
-# ==================== STATIC PAGES (for Bing/AdSense) ====================
+# ==================== STATIC PAGES ====================
 
 @app.route('/about')
 def about():
-    """About Us page"""
     return render_template('about.html')
 
 @app.route('/contact', methods=['GET', 'POST'])
 def contact():
-    """Contact page with form handling"""
     if request.method == 'POST':
-        # Here you would handle form submission
-        # For now, just show success message
-        name = request.form.get('name')
-        email = request.form.get('email')
-        subject = request.form.get('subject')
-        message = request.form.get('message')
-        
-        # TODO: Send email or store message
-        # For now, just redirect with success
         return render_template('contact.html', success=True)
-    
     return render_template('contact.html', success=False)
 
 @app.route('/privacy')
 def privacy():
-    """Privacy Policy page"""
     return render_template('privacy.html')
 
 @app.route('/terms')
 def terms():
-    """Terms of Service page"""
     return render_template('terms.html')
 
 @app.errorhandler(404)
 def page_not_found(e):
-    """404 error handler."""
     return render_template('error.html', 
                           message="Page not found",
                           error_code=404), 404
 
 @app.errorhandler(500)
 def internal_server_error(e):
-    """500 error handler."""
     return render_template('error.html', 
                           message="Internal server error",
                           error_code=500), 500
@@ -641,10 +622,8 @@ def internal_server_error(e):
 
 @app.route('/sitemap.xml')
 def sitemap():
-    """Serve sitemap.xml for search engines - SIMPLE VERSION"""
     from flask import Response
     
-    # Hardcoded sitemap - NO backend calls, NO errors possible
     xml = '''<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
@@ -672,85 +651,18 @@ def sitemap():
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/category/World</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/category/Technology</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/category/Business</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/category/Science</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/category/Health</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/category/Sports</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/category/Entertainment</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/category/Politics</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/category/General</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/about</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/contact</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/privacy</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/terms</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
 </urlset>'''
     
     return Response(xml, mimetype='application/xml')
 
 @app.route('/robots.txt')
 def robots():
-    """Serve robots.txt for search engines"""
     from flask import Response
     
     robots_txt = f"""User-agent: *
 Allow: /
 Sitemap: https://globe-news-jade.vercel.app/sitemap.xml
 
-# Disallow admin or private areas
 Disallow: /fetch-now
 """
     return Response(robots_txt, mimetype='text/plain')
@@ -762,9 +674,6 @@ if __name__ == '__main__':
     print(f"📱 Frontend: http://localhost:5000")
     print(f"🔗 Backend: {BACKEND_URL}")
     print(f"📊 Version: 3.0.0 (with Movies & TV Shows)")
-    print(f"📝 Features: Human summaries, Smart previews, Movies/TV shows")
-    print(f"🗺️  Sitemap: https://globe-news-jade.vercel.app/sitemap.xml")
-    print(f"🤖 Robots:  https://globe-news-jade.vercel.app/robots.txt")
     print("="*60)
     
     app.run(
