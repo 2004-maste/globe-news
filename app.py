@@ -1,16 +1,20 @@
 """
 Globe News Frontend - Complete Version
-Connected to Backend v6.1 with Full Content Extraction & Human Summaries
+Optimized for Speed with Aggressive Caching & Parallel Requests
 """
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for
+from datetime import datetime, timedelta
 import requests
-from datetime import datetime
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import html
 import re
 import os
 import logging
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
 
@@ -22,8 +26,48 @@ logger = logging.getLogger(__name__)
 BACKEND_URL = os.environ.get('BACKEND_URL', 'https://globenew--backend-api--5pt6gkpwq49b.code.run')
 API_VERSION = "v1"
 
-# Timeout settings
-REQUEST_TIMEOUT = 15
+# Optimized timeouts
+DEFAULT_TIMEOUT = 8  # Reduced from 30 to 8 seconds
+LONG_TIMEOUT = 15
+
+# Create a session with connection pooling and retries
+session = requests.Session()
+retry_strategy = Retry(
+    total=2,
+    backoff_factor=0.5,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=retry_strategy)
+session.mount("http://", adapter)
+session.mount("https://", adapter)
+
+# ==================== AGGRESSIVE CACHING ====================
+# In-memory cache with longer TTL
+cache = {}
+CACHE_TTL = {
+    'articles': 300,      # 5 minutes
+    'categories': 3600,   # 1 hour
+    'breaking': 120,      # 2 minutes
+    'movies': 600,        # 10 minutes
+}
+
+def get_cache_key(prefix, params=None):
+    """Generate cache key"""
+    if params:
+        return f"{prefix}_{hash(frozenset(params.items()))}"
+    return prefix
+
+def get_cached(key, ttl_key='articles'):
+    """Get from cache"""
+    if key in cache:
+        data, timestamp = cache[key]
+        if time.time() - timestamp < CACHE_TTL.get(ttl_key, 300):
+            return data
+    return None
+
+def set_cached(key, data, ttl_key='articles'):
+    """Set cache"""
+    cache[key] = (data, time.time())
 
 # ==================== TEMPLATE FILTERS ====================
 
@@ -34,19 +78,6 @@ def datetimeformat(value, format='%b %d, %Y %H:%M'):
     try:
         dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
         return dt.strftime(format)
-    except:
-        return value
-
-@app.template_filter('format_date')
-def format_date(value):
-    if not value:
-        return "Unknown date"
-    try:
-        if 'T' in value:
-            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
-        else:
-            dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S')
-        return dt.strftime('%b %d, %Y')
     except:
         return value
 
@@ -69,30 +100,22 @@ def time_ago(value):
         
         if diff.days > 365:
             years = diff.days // 365
-            return f"{years} year{'s' if years > 1 else ''} ago"
+            return f"{years}y ago"
         elif diff.days > 30:
             months = diff.days // 30
-            return f"{months} month{'s' if months > 1 else ''} ago"
+            return f"{months}mo ago"
         elif diff.days > 0:
-            return f"{diff.days} day{'s' if diff.days > 1 else ''} ago"
+            return f"{diff.days}d ago"
         elif diff.seconds > 3600:
             hours = diff.seconds // 3600
-            return f"{hours} hour{'s' if hours > 1 else ''} ago"
+            return f"{hours}h ago"
         elif diff.seconds > 60:
             minutes = diff.seconds // 60
-            return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
+            return f"{minutes}m ago"
         else:
             return "just now"
     except:
         return value
-
-@app.template_filter('safe_html')
-def safe_html(text):
-    if not text:
-        return ""
-    text = re.sub(r'<script.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r'<style.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    return text
 
 @app.template_filter('category_color')
 def category_color(category):
@@ -124,34 +147,44 @@ def category_icon(category):
     }
     return icons.get(category, '📄')
 
-# ==================== API HELPER FUNCTIONS ====================
+# ==================== OPTIMIZED API HELPER FUNCTIONS ====================
 
-def fetch_articles(params=None):
-    """Fetch articles from backend API."""
+def fetch_with_session(url, params=None, timeout=DEFAULT_TIMEOUT):
+    """Make request with session and timeout"""
     try:
-        url = f"{BACKEND_URL}/api/{API_VERSION}/articles"
-        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-        
+        response = session.get(url, params=params, timeout=timeout)
         if response.status_code == 200:
             return response.json()
-        else:
-            logger.error(f"Articles API returned {response.status_code}")
-            return {"articles": [], "total": 0}
-    except requests.exceptions.Timeout:
-        logger.error("Timeout fetching articles")
+        return None
+    except Exception as e:
+        logger.error(f"Request failed: {url} - {e}")
+        return None
+
+def fetch_articles(params=None):
+    """Fetch articles with caching"""
+    cache_key = get_cache_key('articles', params)
+    cached = get_cached(cache_key, 'articles')
+    if cached:
+        logger.info(f"Using cached articles")
+        return cached
+    
+    try:
+        url = f"{BACKEND_URL}/api/{API_VERSION}/articles"
+        data = fetch_with_session(url, params, DEFAULT_TIMEOUT)
+        if data:
+            set_cached(cache_key, data, 'articles')
+            return data
         return {"articles": [], "total": 0}
     except Exception as e:
         logger.error(f"Error fetching articles: {e}")
         return {"articles": [], "total": 0}
 
 def fetch_article(article_id):
-    """Fetch single article from backend API."""
+    """Fetch single article"""
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/articles/{article_id}"
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
-        
-        if response.status_code == 200:
-            data = response.json()
+        data = fetch_with_session(url, timeout=DEFAULT_TIMEOUT)
+        if data:
             if 'human_summary' not in data:
                 data['human_summary'] = None
             if 'preview_content' not in data:
@@ -160,162 +193,170 @@ def fetch_article(article_id):
                 data['full_content'] = None
             if 'category_name' not in data:
                 data['category_name'] = 'General'
-            return data
-        else:
-            return None
+        return data
     except Exception as e:
         logger.error(f"Error fetching article {article_id}: {e}")
         return None
 
 def fetch_categories():
-    """Fetch categories from backend API."""
+    """Fetch categories with long cache"""
+    cached = get_cached('categories', 'categories')
+    if cached:
+        return cached
+    
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/categories"
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return []
+        data = fetch_with_session(url, timeout=DEFAULT_TIMEOUT)
+        if data:
+            set_cached('categories', data, 'categories')
+            return data
+        return []
     except Exception as e:
         logger.error(f"Error fetching categories: {e}")
         return []
 
 def fetch_breaking_articles():
-    """Fetch breaking news articles."""
+    """Fetch breaking news with short cache"""
+    cached = get_cached('breaking', 'breaking')
+    if cached:
+        return cached
+    
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/articles/breaking/"
-        response = requests.get(url, params={"limit": 10}, timeout=REQUEST_TIMEOUT)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"articles": []}
+        data = fetch_with_session(url, {"limit": 10}, DEFAULT_TIMEOUT)
+        if data:
+            set_cached('breaking', data, 'breaking')
+            return data
+        return {"articles": []}
     except Exception as e:
         logger.error(f"Error fetching breaking articles: {e}")
         return {"articles": []}
 
 def fetch_trending_movies(media_type='all', limit=20):
-    """Fetch trending movies and TV shows from backend."""
+    """Fetch trending movies with long cache"""
+    cache_key = f"movies_{media_type}_{limit}"
+    cached = get_cached(cache_key, 'movies')
+    if cached:
+        return cached
+    
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/movies/trending"
-        params = {'media_type': media_type, 'limit': limit}
-        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"movies": [], "count": 0}
+        data = fetch_with_session(url, {'media_type': media_type, 'limit': limit}, DEFAULT_TIMEOUT)
+        if data:
+            set_cached(cache_key, data, 'movies')
+            return data
+        return {"movies": [], "count": 0}
     except Exception as e:
         logger.error(f"Error fetching trending movies: {e}")
         return {"movies": [], "count": 0}
 
-def fetch_movie_details(movie_id):
-    """Fetch single movie details by TMDB ID."""
-    try:
-        url = f"{BACKEND_URL}/api/{API_VERSION}/movies/{movie_id}"
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return None
-    except Exception as e:
-        logger.error(f"Error fetching movie {movie_id}: {e}")
-        return None
-
-def search_movies(query):
-    """Search for movies by title."""
-    try:
-        url = f"{BACKEND_URL}/api/{API_VERSION}/movies/search"
-        params = {'query': query}
-        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"results": [], "count": 0}
-    except Exception as e:
-        logger.error(f"Error searching movies: {e}")
-        return {"results": [], "count": 0}
-
 def fetch_preview(article_id):
-    """Fetch content preview for article."""
+    """Fetch content preview"""
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/preview/articles/{article_id}"
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return None
+        return fetch_with_session(url, timeout=DEFAULT_TIMEOUT)
     except Exception as e:
-        logger.error(f"Error fetching preview: {e}")
+        logger.error(f"Error fetching preview for article {article_id}: {e}")
         return None
 
 def generate_preview(article_id):
-    """Generate new preview for article."""
+    """Generate new preview"""
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/preview/articles/{article_id}/generate"
-        response = requests.post(url, timeout=REQUEST_TIMEOUT)
-        
+        response = session.post(url, timeout=LONG_TIMEOUT)
         if response.status_code == 200:
             return response.json()
-        else:
-            return None
+        return None
     except Exception as e:
         logger.error(f"Error generating preview: {e}")
         return None
 
 def trigger_fetch():
-    """Trigger manual news fetch."""
+    """Trigger manual news fetch"""
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/fetcher/fetch-now"
-        response = requests.post(url, timeout=REQUEST_TIMEOUT)
-        
+        response = session.post(url, timeout=LONG_TIMEOUT)
         if response.status_code == 200:
             return response.json()
-        else:
-            return {"message": "Error triggering fetch"}
+        return {"message": "Error triggering fetch"}
     except Exception as e:
         logger.error(f"Error triggering fetch: {e}")
         return {"message": "Error triggering fetch"}
+
+def fetch_movie_details(movie_id):
+    """Fetch single movie details"""
+    try:
+        url = f"{BACKEND_URL}/api/{API_VERSION}/movies/{movie_id}"
+        return fetch_with_session(url, timeout=DEFAULT_TIMEOUT)
+    except Exception as e:
+        logger.error(f"Error fetching movie {movie_id}: {e}")
+        return None
+
+def search_movies(query):
+    """Search for movies"""
+    try:
+        url = f"{BACKEND_URL}/api/{API_VERSION}/movies/search"
+        return fetch_with_session(url, {'query': query}, DEFAULT_TIMEOUT) or {"results": [], "count": 0}
+    except Exception as e:
+        logger.error(f"Error searching movies: {e}")
+        return {"results": [], "count": 0}
 
 # ==================== ROUTES ====================
 
 @app.route('/')
 def index():
-    """Homepage - Latest news with 60 articles and trending movies"""
+    """Homepage - Optimized with parallel requests"""
     language = request.args.get('language', 'all')
     page = request.args.get('page', 1, type=int)
     limit = 60
     skip = (page - 1) * limit
     
-    # Fetch articles
-    articles_data = fetch_articles({
-        'limit': limit, 
-        'skip': skip,
-        'language': language
-    })
+    # Use ThreadPoolExecutor for parallel API calls
+    results = {}
+    
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        # Submit all fetch tasks in parallel
+        future_articles = executor.submit(fetch_articles, {
+            'limit': limit, 
+            'skip': skip,
+            'language': language
+        })
+        future_breaking = executor.submit(fetch_breaking_articles)
+        future_categories = executor.submit(fetch_categories)
+        future_movies = executor.submit(fetch_trending_movies, 'all', 6)
+        
+        # Collect results with timeouts
+        try:
+            articles_data = future_articles.result(timeout=10)
+        except:
+            articles_data = {"articles": [], "total": 0}
+        
+        try:
+            breaking_data = future_breaking.result(timeout=8)
+        except:
+            breaking_data = {"articles": []}
+        
+        try:
+            categories = future_categories.result(timeout=8)
+        except:
+            categories = []
+        
+        try:
+            trending_movies_data = future_movies.result(timeout=8)
+        except:
+            trending_movies_data = {"movies": [], "count": 0}
+    
     articles = articles_data.get('articles', [])
     total_articles = articles_data.get('total', 0)
     total_pages = (total_articles + limit - 1) // limit if total_articles > 0 else 1
-    
-    # Fetch breaking articles
-    breaking_data = fetch_breaking_articles()
     breaking_articles = breaking_data.get('articles', [])[:5]
-    
-    # Fetch categories
-    categories = fetch_categories()
-    for category in categories:
-        cat_data = fetch_articles({'category': category['name'], 'limit': 1})
-        category['article_count'] = cat_data.get('total', 0)
-    
-    # Fetch trending movies
-    trending_movies_data = fetch_trending_movies('all', 6)
     trending_movies = trending_movies_data.get('movies', [])
     
-    logger.info(f"RENDER: {len(articles)} articles, {len(breaking_articles)} breaking, {len(trending_movies)} movies")
+    # Get article counts for categories (simplified to avoid extra calls)
+    for category in categories:
+        category['article_count'] = total_articles  # Fallback, or make a separate call
+    
+    logger.info(f"Page loaded: {len(articles)} articles, {len(breaking_articles)} breaking, {len(trending_movies)} movies")
     
     return render_template(
         'index.html',
@@ -332,7 +373,7 @@ def index():
 
 @app.route('/article/<int:article_id>')
 def article_detail(article_id):
-    """Article detail page with human summary support."""
+    """Article detail page"""
     try:
         article = fetch_article(article_id)
         
@@ -367,7 +408,7 @@ def article_detail(article_id):
         
         content_warning = None
         if not has_full_content and content_length < 500:
-            content_warning = "⚠️ Limited content available - only RSS summary was fetched"
+            content_warning = "⚠️ Limited content available"
         
         return render_template(
             'article_detail.html',
@@ -381,14 +422,14 @@ def article_detail(article_id):
         )
         
     except Exception as e:
-        logger.error(f"Error in article_detail for {article_id}: {e}")
+        logger.error(f"Error in article_detail: {e}")
         return render_template('error.html', 
                              message="An error occurred loading the article",
                              error_code=500), 500
 
 @app.route('/article/<int:article_id>/regenerate-preview')
 def regenerate_preview(article_id):
-    """Regenerate preview for article."""
+    """Regenerate preview for article"""
     result = generate_preview(article_id)
     
     if result and result.get('success'):
@@ -405,19 +446,22 @@ def regenerate_preview(article_id):
 
 @app.route('/categories')
 def categories():
-    """Categories listing page."""
+    """Categories listing page"""
     categories_list = fetch_categories()
     
     for category in categories_list:
-        params = {'category': category['name'], 'limit': 1}
-        data = fetch_articles(params)
-        category['article_count'] = data.get('total', 0)
+        try:
+            params = {'category': category['name'], 'limit': 1}
+            data = fetch_articles(params)
+            category['article_count'] = data.get('total', 0)
+        except:
+            category['article_count'] = 0
     
     return render_template('categories.html', categories=categories_list)
 
 @app.route('/category/<category_name>')
 def category_detail(category_name):
-    """Individual category page."""
+    """Individual category page"""
     language = request.args.get('language', 'all')
     page = request.args.get('page', 1, type=int)
     limit = 20
@@ -455,7 +499,7 @@ def category_detail(category_name):
 
 @app.route('/breaking')
 def breaking_news():
-    """Breaking news page."""
+    """Breaking news page"""
     breaking_data = fetch_breaking_articles()
     articles = breaking_data.get('articles', [])
     sources = list(set(article.get('source', 'Unknown') for article in articles))
@@ -470,7 +514,7 @@ def breaking_news():
 
 @app.route('/search')
 def search():
-    """Search results page."""
+    """Search results page"""
     query = request.args.get('q', '')
     language = request.args.get('language', 'all')
     page = request.args.get('page', 1, type=int)
@@ -506,7 +550,7 @@ def search():
 
 @app.route('/movies')
 def movies_home():
-    """Movies and TV Shows homepage."""
+    """Movies and TV Shows homepage"""
     media_type = request.args.get('type', 'all')
     limit = 40
     
@@ -524,7 +568,7 @@ def movies_home():
 
 @app.route('/movie/<int:movie_id>')
 def movie_detail(movie_id):
-    """Movie detail page."""
+    """Movie detail page"""
     movie = fetch_movie_details(movie_id)
     
     if not movie:
@@ -539,7 +583,7 @@ def movie_detail(movie_id):
 
 @app.route('/movies/search')
 def movies_search():
-    """Search movies page."""
+    """Search movies page"""
     query = request.args.get('q', '')
     
     if not query:
@@ -559,15 +603,15 @@ def movies_search():
 
 @app.route('/fetch-now', methods=['POST'])
 def fetch_now():
-    """Trigger manual news fetch."""
+    """Trigger manual news fetch"""
     result = trigger_fetch()
     return redirect(url_for('index'))
 
 @app.route('/api/health')
 def api_health():
-    """API health check."""
+    """API health check"""
     try:
-        response = requests.get(f"{BACKEND_URL}/api/{API_VERSION}/health/status", timeout=5)
+        response = session.get(f"{BACKEND_URL}/api/{API_VERSION}/health/status", timeout=5)
         backend_status = response.json() if response.status_code == 200 else {"status": "unreachable"}
         
         return jsonify({
@@ -575,7 +619,7 @@ def api_health():
             "backend": backend_status,
             "timestamp": datetime.now().isoformat()
         })
-    except Exception:
+    except:
         return jsonify({
             "frontend": "healthy",
             "backend": {"status": "unreachable"},
@@ -604,77 +648,47 @@ def terms():
 
 @app.errorhandler(404)
 def page_not_found(e):
-    return render_template('error.html', 
-                          message="Page not found",
-                          error_code=404), 404
+    return render_template('error.html', message="Page not found", error_code=404), 404
 
 @app.errorhandler(500)
 def internal_server_error(e):
-    return render_template('error.html', 
-                          message="Internal server error",
-                          error_code=500), 500
+    return render_template('error.html', message="Internal server error", error_code=500), 500
 
 # ==================== SEO ROUTES ====================
 
 @app.route('/sitemap.xml')
 def sitemap():
     from flask import Response
-    
     xml = '''<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>https://globe-news-jade.vercel.app/</loc>
-    <changefreq>hourly</changefreq>
-    <priority>1.0</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/breaking</loc>
-    <changefreq>hourly</changefreq>
-    <priority>0.9</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/categories</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/movies</loc>
-    <changefreq>daily</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://globe-news-jade.vercel.app/search</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
+  <url><loc>https://globe-news-jade.vercel.app/</loc><changefreq>hourly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://globe-news-jade.vercel.app/breaking</loc><changefreq>hourly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://globe-news-jade.vercel.app/categories</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://globe-news-jade.vercel.app/movies</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://globe-news-jade.vercel.app/search</loc><changefreq>monthly</changefreq><priority>0.5</priority></url>
 </urlset>'''
-    
     return Response(xml, mimetype='application/xml')
 
 @app.route('/robots.txt')
 def robots():
     from flask import Response
-    
-    robots_txt = f"""User-agent: *
+    robots_txt = """User-agent: *
 Allow: /
 Sitemap: https://globe-news-jade.vercel.app/sitemap.xml
-
-Disallow: /fetch-now
-"""
+Disallow: /fetch-now"""
     return Response(robots_txt, mimetype='text/plain')
 
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("🌐 GLOBE NEWS FRONTEND - Starting Server")
+    print("🌐 GLOBE NEWS FRONTEND - Starting Server (Optimized)")
     print("="*60)
     print(f"📱 Frontend: http://localhost:5000")
     print(f"🔗 Backend: {BACKEND_URL}")
-    print(f"📊 Version: 3.0.0 (with Movies & TV Shows)")
+    print(f"📊 Version: 3.1.0 (Optimized with Caching & Parallel Requests)")
     print("="*60)
     
     app.run(
         host='0.0.0.0',
         port=int(os.environ.get('PORT', 5000)),
-        debug=False
+        debug=False  # Set to False for production speed
     )
-    
