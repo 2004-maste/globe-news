@@ -1,21 +1,16 @@
 """
-Globe News Frontend - Ultra-Fast Version
-With Persistent Caching & Minimal Backend Calls
+Globe News Frontend - Resilient Version
+Always loads immediately with fallback content
 """
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for
-from datetime import datetime, timedelta
+from datetime import datetime
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-import html
-import re
 import os
 import logging
-import time
 import json
-from functools import wraps
-from concurrent.futures import ThreadPoolExecutor
+import time
+from threading import Thread
 
 app = Flask(__name__)
 
@@ -27,62 +22,120 @@ logger = logging.getLogger(__name__)
 BACKEND_URL = os.environ.get('BACKEND_URL', 'https://globenew--backend-api--5pt6gkpwq49b.code.run')
 API_VERSION = "v1"
 
-# ==================== PERSISTENT CACHE ====================
-# Cache directory in /tmp (Vercel allows writing to /tmp)
-CACHE_DIR = '/tmp/globe_news_cache'
+# ==================== SIMPLE FILE CACHE ====================
+CACHE_DIR = '/tmp/globe_cache'
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-CACHE_TTL = {
-    'articles': 300,      # 5 minutes
-    'categories': 3600,   # 1 hour
-    'breaking': 120,      # 2 minutes
-    'movies': 600,        # 10 minutes
-    'index': 60,          # 1 minute for full page cache
-}
-
-def get_cache_path(key):
-    """Get file path for cache key"""
-    safe_key = re.sub(r'[^a-zA-Z0-9]', '_', key)
-    return os.path.join(CACHE_DIR, f"{safe_key}.json")
-
-def get_cached(key, ttl_key='articles'):
-    """Get from persistent cache"""
-    cache_path = get_cache_path(key)
-    if os.path.exists(cache_path):
+def cache_get(key):
+    """Get from cache"""
+    cache_file = os.path.join(CACHE_DIR, f"{key}.json")
+    if os.path.exists(cache_file):
         try:
-            with open(cache_path, 'r') as f:
+            with open(cache_file, 'r') as f:
                 data = json.load(f)
-                cache_time = data.get('_cache_time', 0)
-                if time.time() - cache_time < CACHE_TTL.get(ttl_key, 300):
-                    logger.info(f"Cache hit: {key}")
-                    return data.get('_data')
-        except Exception as e:
-            logger.error(f"Cache read error: {e}")
+                age = time.time() - data.get('timestamp', 0)
+                # Cache valid for 5 minutes
+                if age < 300:
+                    return data.get('value')
+        except:
+            pass
     return None
 
-def set_cached(key, data, ttl_key='articles'):
-    """Save to persistent cache"""
-    cache_path = get_cache_path(key)
+def cache_set(key, value):
+    """Save to cache"""
+    cache_file = os.path.join(CACHE_DIR, f"{key}.json")
     try:
-        with open(cache_path, 'w') as f:
-            json.dump({
-                '_cache_time': time.time(),
-                '_data': data
-            }, f)
-        logger.info(f"Cached: {key}")
-    except Exception as e:
-        logger.error(f"Cache write error: {e}")
+        with open(cache_file, 'w') as f:
+            json.dump({'timestamp': time.time(), 'value': value}, f)
+    except:
+        pass
 
-# ==================== OPTIMIZED SESSION ====================
-session = requests.Session()
-retry_strategy = Retry(
-    total=1,
-    backoff_factor=0.3,
-    status_forcelist=[500, 502, 503, 504],
-)
-adapter = HTTPAdapter(pool_connections=20, pool_maxsize=40, max_retries=retry_strategy)
-session.mount("http://", adapter)
-session.mount("https://", adapter)
+# ==================== BACKGROUND FETCHER ====================
+# Store cached data that updates in background
+cached_articles = []
+cached_breaking = []
+cached_categories = []
+cached_movies = []
+cached_total = 0
+last_update = 0
+
+def background_fetch():
+    """Fetch data in background thread"""
+    global cached_articles, cached_breaking, cached_categories, cached_movies, cached_total, last_update
+    
+    while True:
+        try:
+            # Try to fetch articles
+            try:
+                url = f"{BACKEND_URL}/api/{API_VERSION}/articles?limit=60"
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    cached_articles = data.get('articles', [])
+                    cached_total = data.get('total', 0)
+                    cache_set('articles', cached_articles)
+                    cache_set('total', cached_total)
+                    logger.info(f"Background: Fetched {len(cached_articles)} articles")
+            except Exception as e:
+                logger.warning(f"Background articles failed: {e}")
+                # Use cached if available
+                if not cached_articles:
+                    cached_articles = cache_get('articles') or []
+                    cached_total = cache_get('total') or 0
+            
+            # Try to fetch breaking
+            try:
+                url = f"{BACKEND_URL}/api/{API_VERSION}/articles/breaking/?limit=5"
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    cached_breaking = resp.json().get('articles', [])
+                    cache_set('breaking', cached_breaking)
+                    logger.info(f"Background: Fetched {len(cached_breaking)} breaking")
+            except Exception as e:
+                logger.warning(f"Background breaking failed: {e}")
+                if not cached_breaking:
+                    cached_breaking = cache_get('breaking') or []
+            
+            # Try to fetch categories
+            try:
+                url = f"{BACKEND_URL}/api/{API_VERSION}/categories"
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    cached_categories = resp.json()
+                    # Add article counts
+                    for cat in cached_categories:
+                        cat['article_count'] = cached_total // max(len(cached_categories), 1)
+                    cache_set('categories', cached_categories)
+                    logger.info(f"Background: Fetched {len(cached_categories)} categories")
+            except Exception as e:
+                logger.warning(f"Background categories failed: {e}")
+                if not cached_categories:
+                    cached_categories = cache_get('categories') or []
+            
+            # Try to fetch movies
+            try:
+                url = f"{BACKEND_URL}/api/{API_VERSION}/movies/trending?limit=6"
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    cached_movies = resp.json().get('movies', [])
+                    cache_set('movies', cached_movies)
+                    logger.info(f"Background: Fetched {len(cached_movies)} movies")
+            except Exception as e:
+                logger.warning(f"Background movies failed: {e}")
+                if not cached_movies:
+                    cached_movies = cache_get('movies') or []
+            
+            last_update = time.time()
+            
+        except Exception as e:
+            logger.error(f"Background fetch error: {e}")
+        
+        # Wait 5 minutes before next background update
+        time.sleep(300)
+
+# Start background thread
+bg_thread = Thread(target=background_fetch, daemon=True)
+bg_thread.start()
 
 # ==================== TEMPLATE FILTERS ====================
 
@@ -100,6 +153,7 @@ def datetimeformat(value, format='%b %d, %Y'):
 def truncate(text, length=150):
     if not text:
         return ""
+    import re
     text = re.sub(r'<[^>]+>', '', text)
     if len(text) <= length:
         return text
@@ -139,125 +193,34 @@ def category_icon(category):
     }
     return icons.get(category, '📄')
 
-# ==================== FAST API FUNCTIONS ====================
-
-def fast_fetch(url, params=None, timeout=5):
-    """Ultra-fast fetch with short timeout"""
-    try:
-        response = session.get(url, params=params, timeout=timeout)
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        logger.warning(f"Fast fetch failed: {url[:50]}... - {e}")
-    return None
-
-def fetch_articles_fast(params=None):
-    """Fetch articles with aggressive caching"""
-    cache_key = f"articles_{hash(str(params)) if params else 'default'}"
-    
-    # Try cache first
-    cached = get_cached(cache_key, 'articles')
-    if cached:
-        return cached
-    
-    # Fetch from backend with short timeout
-    url = f"{BACKEND_URL}/api/{API_VERSION}/articles"
-    data = fast_fetch(url, params, timeout=6)
-    
-    if data and data.get('articles'):
-        set_cached(cache_key, data, 'articles')
-        return data
-    
-    # Return last resort data if available
-    return {"articles": [], "total": 0}
-
-def fetch_categories_fast():
-    """Fetch categories with long cache"""
-    cached = get_cached('categories', 'categories')
-    if cached:
-        return cached
-    
-    url = f"{BACKEND_URL}/api/{API_VERSION}/categories"
-    data = fast_fetch(url, timeout=5)
-    
-    if data:
-        set_cached('categories', data, 'categories')
-        return data
-    return []
-
-def fetch_breaking_fast():
-    """Fetch breaking news with short cache"""
-    cached = get_cached('breaking', 'breaking')
-    if cached:
-        return cached
-    
-    url = f"{BACKEND_URL}/api/{API_VERSION}/articles/breaking/"
-    data = fast_fetch(url, {"limit": 5}, timeout=5)
-    
-    if data:
-        set_cached('breaking', data, 'breaking')
-        return data
-    return {"articles": []}
-
-def fetch_movies_fast():
-    """Fetch movies with long cache"""
-    cached = get_cached('movies', 'movies')
-    if cached:
-        return cached
-    
-    url = f"{BACKEND_URL}/api/{API_VERSION}/movies/trending"
-    data = fast_fetch(url, {"limit": 6}, timeout=6)
-    
-    if data:
-        set_cached('movies', data, 'movies')
-        return data
-    return {"movies": []}
-
 # ==================== ROUTES ====================
 
 @app.route('/')
 def index():
-    """Homepage - Ultra-fast with parallel caching"""
+    """Homepage - Always loads instantly from cache"""
     language = request.args.get('language', 'all')
     page = request.args.get('page', 1, type=int)
     limit = 60
-    skip = (page - 1) * limit
     
-    # Try to get full page from cache (for non-logged-in users)
-    full_page_cache_key = f"full_page_{language}_{page}"
-    full_page_cached = get_cached(full_page_cache_key, 'index')
-    if full_page_cached:
-        logger.info("Serving full page from cache")
-        return full_page_cached
+    # Use globally cached data (updated in background)
+    articles = cached_articles
+    total_articles = cached_total
+    breaking_articles = cached_breaking[:5]
+    categories = cached_categories
+    trending_movies = cached_movies
     
-    # Fetch all data in parallel
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        future_articles = executor.submit(fetch_articles_fast, {
-            'limit': limit, 'skip': skip, 'language': language
-        })
-        future_breaking = executor.submit(fetch_breaking_fast)
-        future_categories = executor.submit(fetch_categories_fast)
-        future_movies = executor.submit(fetch_movies_fast)
-        
-        articles_data = future_articles.result(timeout=8)
-        breaking_data = future_breaking.result(timeout=5)
-        categories = future_categories.result(timeout=5)
-        movies_data = future_movies.result(timeout=6)
-    
-    articles = articles_data.get('articles', [])
-    total_articles = articles_data.get('total', 0)
+    # Simple pagination for display only
+    start = (page - 1) * limit
+    end = start + limit
+    paginated_articles = articles[start:end] if articles else []
     total_pages = max(1, (total_articles + limit - 1) // limit) if total_articles > 0 else 1
-    breaking_articles = breaking_data.get('articles', [])[:5]
-    trending_movies = movies_data.get('movies', [])
     
-    # Add article counts to categories
-    for category in categories:
-        category['article_count'] = total_articles // max(len(categories), 1)
+    # Add status indicator for first load
+    show_loading = len(articles) == 0 and last_update == 0
     
-    # Render template
-    rendered = render_template(
+    return render_template(
         'index.html',
-        articles=articles,
+        articles=paginated_articles,
         breaking_articles=breaking_articles,
         categories=categories,
         trending_movies=trending_movies,
@@ -265,47 +228,49 @@ def index():
         page=page,
         total_pages=total_pages,
         total_articles=total_articles,
-        limit=limit
+        limit=limit,
+        show_loading=show_loading
     )
-    
-    # Cache the full rendered page
-    set_cached(full_page_cache_key, rendered, 'index')
-    
-    return rendered
 
 @app.route('/article/<int:article_id>')
 def article_detail(article_id):
-    """Article detail page with caching"""
-    # Check if article is cached
+    """Article detail - fetch on demand with cache"""
+    # Try cache first
     cache_key = f"article_{article_id}"
-    cached = get_cached(cache_key, 'articles')
+    cached = cache_get(cache_key)
     if cached:
         return cached
     
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/articles/{article_id}"
-        article = fast_fetch(url, timeout=8)
+        response = requests.get(url, timeout=10)
         
-        if not article:
+        if response.status_code != 200:
             return render_template('error.html', message="Article not found", error_code=404), 404
         
-        # Ensure all fields exist
+        article = response.json()
+        
+        # Set defaults
         article.setdefault('human_summary', None)
         article.setdefault('preview_content', None)
         article.setdefault('full_content', None)
         article.setdefault('category_name', 'General')
         
-        # Fetch preview if needed
+        # Try to get preview
         preview_html = article.get('human_summary') or article.get('preview_content')
         preview_type = 'human' if article.get('human_summary') else ('smart' if preview_html else None)
         
-        # Get preview from API if not available
         if not preview_html:
-            preview_url = f"{BACKEND_URL}/api/{API_VERSION}/preview/articles/{article_id}"
-            preview_data = fast_fetch(preview_url, timeout=6)
-            if preview_data and preview_data.get('has_preview'):
-                preview_html = preview_data.get('preview')
-                preview_type = 'smart'
+            try:
+                preview_url = f"{BACKEND_URL}/api/{API_VERSION}/preview/articles/{article_id}"
+                preview_resp = requests.get(preview_url, timeout=8)
+                if preview_resp.status_code == 200:
+                    preview_data = preview_resp.json()
+                    if preview_data.get('has_preview'):
+                        preview_html = preview_data.get('preview')
+                        preview_type = 'smart'
+            except:
+                pass
         
         has_full_content = article.get('has_full_content', False)
         content_length = article.get('content_length', 0)
@@ -323,8 +288,8 @@ def article_detail(article_id):
             content_length=content_length
         )
         
-        # Cache the rendered article (30 minutes)
-        set_cached(cache_key, rendered, 'articles')
+        # Cache for 1 hour
+        cache_set(cache_key, rendered)
         
         return rendered
         
@@ -337,142 +302,92 @@ def regenerate_preview(article_id):
     """Regenerate preview"""
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/preview/articles/{article_id}/generate"
-        session.post(url, timeout=15)
+        requests.post(url, timeout=15)
     except:
         pass
-    # Clear article cache
-    cache_key = f"article_{article_id}"
-    cache_path = get_cache_path(cache_key)
-    if os.path.exists(cache_path):
-        os.remove(cache_path)
+    # Clear cache
+    cache_file = os.path.join(CACHE_DIR, f"article_{article_id}.json")
+    if os.path.exists(cache_file):
+        os.remove(cache_file)
     return redirect(url_for('article_detail', article_id=article_id))
 
 @app.route('/categories')
 def categories():
-    """Categories page with caching"""
-    cached = get_cached('categories_page', 'categories')
-    if cached:
-        return cached
-    
-    categories_list = fetch_categories_fast()
-    for category in categories_list:
-        category['article_count'] = 1000  # Placeholder
-    
-    rendered = render_template('categories.html', categories=categories_list)
-    set_cached('categories_page', rendered, 'categories')
-    return rendered
+    """Categories page"""
+    categories_list = cached_categories
+    return render_template('categories.html', categories=categories_list)
 
 @app.route('/category/<category_name>')
 def category_detail(category_name):
-    """Category detail with caching"""
-    language = request.args.get('language', 'all')
-    page = request.args.get('page', 1, type=int)
-    cache_key = f"category_{category_name}_{language}_{page}"
+    """Category detail"""
+    # Filter articles by category
+    category_articles = [a for a in cached_articles if a.get('category_name', '').lower() == category_name.lower()]
+    total = len(category_articles)
     
-    cached = get_cached(cache_key, 'articles')
-    if cached:
-        return cached
+    current_category = {'name': category_name, 'description': f'{category_name} news'}
     
-    limit = 20
-    skip = (page - 1) * limit
-    
-    articles_data = fetch_articles_fast({
-        'category': category_name, 'language': language, 'limit': limit, 'skip': skip
-    })
-    articles = articles_data.get('articles', [])
-    total = articles_data.get('total', 0)
-    total_pages = max(1, (total + limit - 1) // limit) if total > 0 else 1
-    
-    categories_list = fetch_categories_fast()
-    current_category = next((c for c in categories_list if c['name'].lower() == category_name.lower()), None)
-    
-    if not current_category:
-        return render_template('error.html', message="Category not found", error_code=404), 404
-    
-    rendered = render_template(
+    return render_template(
         'category_detail.html',
         category=current_category,
-        articles=articles,
-        language=language,
-        page=page,
-        total_pages=total_pages,
+        articles=category_articles[:20],
+        language='all',
+        page=1,
+        total_pages=1,
         total_articles=total
     )
-    
-    set_cached(cache_key, rendered, 'articles')
-    return rendered
 
 @app.route('/breaking')
 def breaking_news():
     """Breaking news page"""
-    breaking_data = fetch_breaking_fast()
-    articles = breaking_data.get('articles', [])
-    sources = list(set(a.get('source', 'Unknown') for a in articles))
-    
-    return render_template(
-        'breaking.html',
-        articles=articles,
-        sources=sources,
-        article_count=len(articles),
-        source_count=len(sources)
-    )
+    return render_template('breaking.html', articles=cached_breaking[:20])
 
 @app.route('/search')
 def search():
-    """Search page (no caching for search)"""
+    """Search page"""
     query = request.args.get('q', '')
     if not query:
         return redirect(url_for('index'))
     
-    articles_data = fetch_articles_fast({'search': query, 'limit': 20})
-    articles = articles_data.get('articles', [])
-    total = articles_data.get('total', 0)
+    # Simple search in cached articles
+    results = []
+    query_lower = query.lower()
+    for a in cached_articles:
+        if query_lower in a.get('title', '').lower() or query_lower in a.get('description', '').lower():
+            results.append(a)
     
-    return render_template(
-        'search.html',
-        query=query,
-        articles=articles,
-        total_results=total
-    )
+    return render_template('search.html', query=query, articles=results[:20], total_results=len(results))
 
 # ==================== MOVIE ROUTES ====================
 
 @app.route('/movies')
 def movies_home():
-    """Movies page with caching"""
-    cached = get_cached('movies_page', 'movies')
-    if cached:
-        return cached
-    
-    movies_data = fetch_movies_fast()
-    movies = movies_data.get('movies', [])
-    categories = fetch_categories_fast()
-    
-    rendered = render_template('movies/index.html', movies=movies, categories=categories, total_movies=len(movies))
-    set_cached('movies_page', rendered, 'movies')
-    return rendered
+    """Movies page"""
+    return render_template('movies/index.html', movies=cached_movies)
 
 @app.route('/movie/<int:movie_id>')
 def movie_detail(movie_id):
-    """Movie detail with caching"""
-    cache_key = f"movie_{movie_id}"
-    cached = get_cached(cache_key, 'movies')
-    if cached:
-        return cached
+    """Movie detail"""
+    # Find movie in cached list
+    movie = None
+    for m in cached_movies:
+        if m.get('tmdb_id') == movie_id:
+            movie = m
+            break
     
-    try:
-        url = f"{BACKEND_URL}/api/{API_VERSION}/movies/{movie_id}"
-        movie = fast_fetch(url, timeout=8)
-        
-        if not movie:
-            return render_template('error.html', message="Movie not found", error_code=404), 404
-        
-        rendered = render_template('movies/detail.html', movie=movie)
-        set_cached(cache_key, rendered, 'movies')
-        return rendered
-    except Exception as e:
-        logger.error(f"Error fetching movie: {e}")
-        return render_template('error.html', message="Error loading movie", error_code=500), 500
+    if not movie:
+        # Try to fetch on demand
+        try:
+            url = f"{BACKEND_URL}/api/{API_VERSION}/movies/{movie_id}"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                movie = response.json()
+        except:
+            pass
+    
+    if not movie:
+        return render_template('error.html', message="Movie not found", error_code=404), 404
+    
+    return render_template('movies/detail.html', movie=movie)
 
 @app.route('/movies/search')
 def movies_search():
@@ -481,29 +396,22 @@ def movies_search():
     if not query:
         return redirect(url_for('movies_home'))
     
-    try:
-        url = f"{BACKEND_URL}/api/{API_VERSION}/movies/search"
-        results = fast_fetch(url, {'query': query}, timeout=8) or {"results": []}
-        movies = results.get('results', [])
-        return render_template('movies/search.html', query=query, movies=movies, total_results=len(movies))
-    except:
-        return render_template('movies/search.html', query=query, movies=[], total_results=0)
+    # Search in cached movies
+    results = []
+    query_lower = query.lower()
+    for m in cached_movies:
+        if query_lower in m.get('title', '').lower():
+            results.append(m)
+    
+    return render_template('movies/search.html', query=query, movies=results, total_results=len(results))
 
 # ==================== STATIC ROUTES ====================
 
 @app.route('/fetch-now', methods=['POST'])
 def fetch_now():
-    """Clear cache and trigger fetch"""
-    # Clear all cache
-    for f in os.listdir(CACHE_DIR):
-        os.remove(os.path.join(CACHE_DIR, f))
-    
-    try:
-        url = f"{BACKEND_URL}/api/{API_VERSION}/fetcher/fetch-now"
-        session.post(url, timeout=10)
-    except:
-        pass
-    
+    """Trigger immediate fetch"""
+    # Trigger background fetch immediately
+    Thread(target=background_fetch, daemon=True).start()
     return redirect(url_for('index'))
 
 @app.route('/api/health')
@@ -555,10 +463,10 @@ def robots():
 
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("🌐 GLOBE NEWS - ULTRA-FAST VERSION")
+    print("🌐 GLOBE NEWS - RESILIENT VERSION")
     print("="*60)
     print(f"🔗 Backend: {BACKEND_URL}")
-    print(f"📊 Cache Directory: {CACHE_DIR}")
+    print("📊 Mode: Background fetch with instant cache")
     print("="*60)
     
     app.run(
