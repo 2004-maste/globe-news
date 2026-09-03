@@ -26,15 +26,15 @@ logger = logging.getLogger(__name__)
 BACKEND_URL = os.environ.get('BACKEND_URL', 'https://globenew--backend-api--5pt6gkpwq49b.code.run')
 API_VERSION = "v1"
 
-# Optimized timeouts
-DEFAULT_TIMEOUT = 8  # Reduced from 30 to 8 seconds
-LONG_TIMEOUT = 15
+# Optimized timeouts - INCREASED for reliability
+DEFAULT_TIMEOUT = 20  # Increased from 8 to 20 seconds
+LONG_TIMEOUT = 30
 
 # Create a session with connection pooling and retries
 session = requests.Session()
 retry_strategy = Retry(
-    total=2,
-    backoff_factor=0.5,
+    total=3,  # Increased retries
+    backoff_factor=1,  # Increased backoff
     status_forcelist=[429, 500, 502, 503, 504],
 )
 adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=retry_strategy)
@@ -45,10 +45,10 @@ session.mount("https://", adapter)
 # In-memory cache with longer TTL
 cache = {}
 CACHE_TTL = {
-    'articles': 300,      # 5 minutes
+    'articles': 120,      # 2 minutes - SHORTER for fresh content
     'categories': 3600,   # 1 hour
-    'breaking': 120,      # 2 minutes
-    'movies': 600,        # 10 minutes
+    'breaking': 60,       # 1 minute
+    'movies': 300,        # 5 minutes
 }
 
 def get_cache_key(prefix, params=None):
@@ -62,12 +62,14 @@ def get_cached(key, ttl_key='articles'):
     if key in cache:
         data, timestamp = cache[key]
         if time.time() - timestamp < CACHE_TTL.get(ttl_key, 300):
+            logger.info(f"Cache HIT: {key}")
             return data
     return None
 
 def set_cached(key, data, ttl_key='articles'):
     """Set cache"""
     cache[key] = (data, time.time())
+    logger.info(f"Cache SET: {key}")
 
 # ==================== TEMPLATE FILTERS ====================
 
@@ -152,9 +154,16 @@ def category_icon(category):
 def fetch_with_session(url, params=None, timeout=DEFAULT_TIMEOUT):
     """Make request with session and timeout"""
     try:
+        logger.info(f"Fetching: {url}")
         response = session.get(url, params=params, timeout=timeout)
         if response.status_code == 200:
+            logger.info(f"Success: {url} - {response.status_code}")
             return response.json()
+        else:
+            logger.error(f"Failed: {url} - {response.status_code}")
+            return None
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout: {url} (timeout={timeout}s)")
         return None
     except Exception as e:
         logger.error(f"Request failed: {url} - {e}")
@@ -165,15 +174,18 @@ def fetch_articles(params=None):
     cache_key = get_cache_key('articles', params)
     cached = get_cached(cache_key, 'articles')
     if cached:
-        logger.info(f"Using cached articles")
+        logger.info(f"Using cached articles: {len(cached.get('articles', []))} articles")
         return cached
     
     try:
         url = f"{BACKEND_URL}/api/{API_VERSION}/articles"
+        logger.info(f"Fetching articles with params: {params}")
         data = fetch_with_session(url, params, DEFAULT_TIMEOUT)
-        if data:
+        if data and data.get('articles'):
             set_cached(cache_key, data, 'articles')
+            logger.info(f"Fetched {len(data.get('articles', []))} articles, total={data.get('total', 0)}")
             return data
+        logger.warning("No articles returned from API, returning empty")
         return {"articles": [], "total": 0}
     except Exception as e:
         logger.error(f"Error fetching articles: {e}")
@@ -311,6 +323,8 @@ def index():
     limit = 60
     skip = (page - 1) * limit
     
+    logger.info(f"Homepage requested: language={language}, page={page}")
+    
     # Use ThreadPoolExecutor for parallel API calls
     results = {}
     
@@ -325,25 +339,30 @@ def index():
         future_categories = executor.submit(fetch_categories)
         future_movies = executor.submit(fetch_trending_movies, 'all', 6)
         
-        # Collect results with timeouts
+        # Collect results with INCREASED timeouts
         try:
-            articles_data = future_articles.result(timeout=10)
-        except:
+            articles_data = future_articles.result(timeout=25)  # Increased from 10 to 25
+            logger.info(f"Articles data received: {len(articles_data.get('articles', []))} articles")
+        except Exception as e:
+            logger.error(f"Articles fetch failed: {e}")
             articles_data = {"articles": [], "total": 0}
         
         try:
-            breaking_data = future_breaking.result(timeout=8)
-        except:
+            breaking_data = future_breaking.result(timeout=20)
+        except Exception as e:
+            logger.error(f"Breaking fetch failed: {e}")
             breaking_data = {"articles": []}
         
         try:
-            categories = future_categories.result(timeout=8)
-        except:
+            categories = future_categories.result(timeout=20)
+        except Exception as e:
+            logger.error(f"Categories fetch failed: {e}")
             categories = []
         
         try:
-            trending_movies_data = future_movies.result(timeout=8)
-        except:
+            trending_movies_data = future_movies.result(timeout=20)
+        except Exception as e:
+            logger.error(f"Movies fetch failed: {e}")
             trending_movies_data = {"movies": [], "count": 0}
     
     articles = articles_data.get('articles', [])
@@ -352,11 +371,15 @@ def index():
     breaking_articles = breaking_data.get('articles', [])[:5]
     trending_movies = trending_movies_data.get('movies', [])
     
-    # Get article counts for categories (simplified to avoid extra calls)
+    # Get article counts for categories
     for category in categories:
-        category['article_count'] = total_articles  # Fallback, or make a separate call
+        try:
+            cat_data = fetch_articles({'category': category['name'], 'limit': 1})
+            category['article_count'] = cat_data.get('total', 0)
+        except:
+            category['article_count'] = 0
     
-    logger.info(f"Page loaded: {len(articles)} articles, {len(breaking_articles)} breaking, {len(trending_movies)} movies")
+    logger.info(f"RENDER: {len(articles)} articles, {len(breaking_articles)} breaking, {len(trending_movies)} movies, total={total_articles}")
     
     return render_template(
         'index.html',
@@ -611,7 +634,7 @@ def fetch_now():
 def api_health():
     """API health check"""
     try:
-        response = session.get(f"{BACKEND_URL}/api/{API_VERSION}/health/status", timeout=5)
+        response = session.get(f"{BACKEND_URL}/api/{API_VERSION}/health/status", timeout=10)
         backend_status = response.json() if response.status_code == 200 else {"status": "unreachable"}
         
         return jsonify({
@@ -690,5 +713,5 @@ if __name__ == '__main__':
     app.run(
         host='0.0.0.0',
         port=int(os.environ.get('PORT', 5000)),
-        debug=False  # Set to False for production speed
+        debug=False
     )
